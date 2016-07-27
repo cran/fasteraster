@@ -28,6 +28,8 @@ Takes a raster matrix and vectorize it by polygons. Typically the nature of arte
 and can be vectorized in much more efficient way than draw a series of 90 degrees lines.
 }
 \examples{
+library(datasets)
+raster2vector(volcano, 100, 200, 60, 1, FALSE)
 raster2vector(volcano, 120, 200, 20)
 }
 

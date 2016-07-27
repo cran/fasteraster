@@ -17,7 +17,9 @@ NULL
 #' @param precision linearization precision in matrix cells.
 #' @param exclave polygons may have other inside.
 #' @return list of integer matrixes that represent polygon coordinates in two columns.
-#' @examples raster2vector(volcano, 120, 200, 20)
+#' @examples library(datasets)
+#' raster2vector(volcano, 100, 200, 60, 1, FALSE)
+#' raster2vector(volcano, 120, 200, 20)
 #' @export
 raster2vector <- function(raster, from = 0, to = 1, step = 0.1, precision = 1L, exclave = TRUE) {
     .Call('fasteraster_raster2vector', PACKAGE = 'fasteraster', raster, from, to, step, precision, exclave)

@@ -19,7 +19,6 @@
 
 #include <Rcpp.h>
 #include <vector>
-#include <math.h>
 
 using namespace Rcpp;
 
@@ -29,12 +28,13 @@ using namespace Rcpp;
 #define FENCE_X 1
 #define FENCE_Y 2
 #define FENCE_XY 3
-#define FENCE_UNSET_DX fence[x + 1][y] &= FENCE_Y
-#define FENCE_UNSET_DY fence[x][y + 1] &= FENCE_X
-#define FENCE_OPEN_RIGHT !(fence[x + 1][y] & FENCE_X)
-#define FENCE_OPEN_DOWN !(fence[x][y] & FENCE_Y)
-#define FENCE_OPEN_LEFT !(fence[x][y] & FENCE_X)
-#define FENCE_OPEN_UP !(fence[x][y + 1] & FENCE_Y)
+#define COORDS(x, y) ((x) * leny + (y))
+#define FENCE_UNSET_DX (fence[COORDS(x + 1, y)] &= FENCE_Y)
+#define FENCE_UNSET_DY (fence[COORDS(x, y + 1)] &= FENCE_X)
+#define FENCE_OPEN_RIGHT (!(fence[COORDS(x + 1, y)] & FENCE_X))
+#define FENCE_OPEN_DOWN (!(fence[COORDS(x, y)] & FENCE_Y))
+#define FENCE_OPEN_LEFT (!(fence[COORDS(x, y)] & FENCE_X))
+#define FENCE_OPEN_UP (!(fence[COORDS(x, y + 1)] & FENCE_Y))
 
 struct polygon_t
 {
@@ -53,7 +53,6 @@ struct vector_t
 //' @importFrom Rcpp sourceCpp
 //NULL
 
-
 //' Converts raster image matrix into list of polygons.
 //' 
 //' Takes a raster matrix and vectorize it by polygons. Typically the nature of artefact images is linear
@@ -66,37 +65,45 @@ struct vector_t
 //' @param precision linearization precision in matrix cells.
 //' @param exclave polygons may have other inside.
 //' @return list of integer matrixes that represent polygon coordinates in two columns.
-//' @examples raster2vector(volcano, 120, 200, 20)
+//' @examples library(datasets)
+//' raster2vector(volcano, 100, 200, 60, 1, FALSE)
+//' raster2vector(volcano, 120, 200, 20)
 //' @export
 // [[Rcpp::export]]
 List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double step = 0.1, int precision = 1, bool exclave = true)
 {
-  int lenx = raster.nrow();
-  int leny = raster.ncol();
+  int lenx0 = raster.nrow();
+  int leny0 = raster.ncol();
   
   std::vector<polygon_t> polyheads;
-  int fence[lenx + 1][leny + 1];
-  int polyxy[lenx + 1][leny + 1];
-
-  for (int x = lenx; x >= 0; x--)
-    for (int y = leny; y >= 0; y--)
+  int lenx = lenx0 + 1;
+  int leny = leny0 + 1;
+  int* fence = new int[lenx * leny];
+  int* polyxy = new int[lenx * leny];
+  int polylen = 0;
+  
+  for (int x = lenx0; x >= 0; x--)
+    for (int y = leny0; y >= 0; y--)
     {
-      // anyway set fence to the lower left corner
-      fence[x][y] = FENCE_XY;
+      // in all cases set fence to the lower left corner
+      fence[COORDS(x, y)] = FENCE_XY;
+      // and unknown polygonID
+      polyxy[COORDS(x, y)] = POLY_NA;
+
+      // margin fences
+      if (x == lenx0 || y == leny0)
+        continue;
 
       // get fills for current cell
-      double f = raster(x, y);
+      double f = raster[x + y * lenx0];
             
-      // margin fences or background
-      if (x == lenx || y == leny || f <= from || f > to)
-      {
-        polyxy[x][y] = POLY_NA;
+      // background
+      if (f <= from || f > to)
         continue;
-      }
 
       //get neighbour polygons
-      int pdx = polyxy[x + 1][y];
-      int pdy = polyxy[x][y + 1];
+      int pdx = polyxy[COORDS(x + 1, y)];
+      int pdy = polyxy[COORDS(x, y + 1)];
       
       // get fills for this and neighbour cells
       f = ceilf(f / step) * step;
@@ -112,19 +119,20 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
         p.y = y;
         p.f = f;
         polyheads.push_back(p);
-        polyxy[x][y] = polyheads.size() - 1;
+        polyxy[COORDS(x, y)] = polyheads.size() - 1;
+        polylen ++;
       }
       else if (f == fdx && f != fdy)
       {
         // right neighbour
         FENCE_UNSET_DX;
-        polyxy[x][y] = polyxy[x + 1][y];        
+        polyxy[COORDS(x, y)] = pdx;
       }
       else if (f != fdx && f == fdy)
       {
         // upper neighbour
         FENCE_UNSET_DY;
-        polyxy[x][y] = polyxy[x][y + 1];
+        polyxy[COORDS(x, y)] = pdy;
       }
       else
       {
@@ -134,41 +142,38 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
         {
           // welding different polygons with the same fill
           polyheads[pdy].f = FILL_NA; // mark as removed
-          for (int i = leny - 1; i > y; i--)
-            if (polyxy[x][i] == pdy)
-              polyxy[x][i] = pdx;
+          polylen--;
+          
+          for (int i = leny0; i > y; i--)
+            if (polyxy[COORDS(x, i)] == pdy)
+              polyxy[COORDS(x, i)] = pdx;
           FENCE_UNSET_DX;
           FENCE_UNSET_DY;
-          polyxy[x][y] = pdx;
+          polyxy[COORDS(x, y)] = pdx;
         }
         else
         {
           // same fills, same polygons
           
-          if (fence[x + 1][y + 1] & FENCE_Y && !exclave)
+          if ((fence[COORDS(x + 1, y + 1)] & FENCE_Y) && !exclave)
           {
             // there is an internal polygon inside
             
             // keep the horizontal fence and weld to right
             FENCE_UNSET_DX;
-            polyxy[x][y] = pdx;
+            polyxy[COORDS(x, y)] = pdx;
           }
           else
           {
             // weld to both
             FENCE_UNSET_DX;
             FENCE_UNSET_DY;
-            polyxy[x][y] = pdx;
+            polyxy[COORDS(x, y)] = pdx;
           }
         }
         
       }
     }
-  
-  int polylen = 0;
-  for (int p = polyheads.size() - 1; p >= 0; p--)
-    if (polyheads[p].f != FILL_NA)
-      polylen++;
   
   List polygons(polylen);
   std::vector<vector_t> pol;
@@ -274,7 +279,7 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
             }
       }
 
-      if (pol.size() > 0 && x == ph.x && y == ph.y & pol[0].x == nv.x && pol[0].y == nv.y)
+      if (pol.size() > 0 && x == ph.x && y == ph.y && pol[0].x == nv.x && pol[0].y == nv.y)
         break; // not just started, same point, same vector
 
       pol.push_back(nv);
@@ -283,12 +288,12 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
       y += nv.y;
       v = nv;
     };
-    
+
     // join 90 deg lines - optimize polygon
     pol1.clear();
     v.x = INT_MAX;
     v.y = INT_MAX;
-    for (int i = 0; i < pol.size(); i++)
+    for (int i = 0; i < (int) pol.size(); i++)
     {
       nv = pol[i];
       if (v.x == nv.x && v.y == nv.y)
@@ -307,7 +312,7 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
     pol2.clear();
     v.x = INT_MAX;
     v.y = INT_MAX;
-    for (int i = 0; i < pol1.size(); i++)
+    for (int i = 0; i < (int) pol1.size(); i++)
     {
       nv = pol1[i];
       if ((v.x >= -precision && v.x <= precision && v.x != 0 && nv.x == 0)
@@ -328,7 +333,7 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
     int oi = 0;
     pol3.push_back(pol2[oi]);
     
-    for (int i = 1; i < pol2.size(); i++)
+    for (int i = 1; i < (int) pol2.size(); i++)
     {
       nv = pol2[i];
 
@@ -341,12 +346,12 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
         x += pol2[j].x;
         y += pol2[j].y;
         
-        double a = atan2(y, x) - atan2(pol3.back().y, pol3.back().x);
+        double a = atan2((double) y, (double) x) - atan2((double) pol3.back().y, (double) pol3.back().x);
         if (a > PI)
           a -= 2 * PI;
         if (a < PI)
           a += 2 * PI;
-        if (fabs(sin(a) * sqrt(x * x + y * y)) > precision)
+        if (fabs(sin(a) * sqrt((double) (x * x) + (double) (y * y))) > (double) precision)
         {
           fit = false;
           break;
@@ -367,11 +372,11 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
  
     // fill result data
     IntegerMatrix mat(pol3.size(), 2);
-    x = ph.x;
-    y = ph.y;
+    x = ph.x + 1; // convert from 0 to 1 based array
+    y = ph.y + 1;
     mat(0, 0) = x;
     mat(0, 1) = y;
-    for (int i = 0 ; i < pol3.size() - 1; i ++)
+    for (int i = 0 ; i < (int) pol3.size() - 1; i ++)
     {
       x += pol3[i].x;
       y += pol3[i].y;
@@ -382,6 +387,7 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
     polygons(polyidx++) = mat;
   }
   
+  
 /*test function
   IntegerMatrix mat(lenx + 1, leny + 1);
   for (int x = lenx; x >= 0; x--)
@@ -391,5 +397,8 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
   polygons(0) = mat;
   */
 
+  delete[] fence;
+  delete[] polyxy; 
+  
   return polygons;
 }
