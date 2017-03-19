@@ -32,4 +32,3 @@ library(datasets)
 raster2vector(volcano, 100, 200, 60, 1, FALSE)
 raster2vector(volcano, 120, 200, 20)
 }
-

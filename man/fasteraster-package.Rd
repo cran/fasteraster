@@ -2,32 +2,38 @@
 \alias{fasteraster}
 \docType{package}
 \title{
-  A short title line describing what the package does
+  Raster Image Processing and Vector Recognition
 }
 \description{
-  A more detailed description of what the package does. A length
-  of about one to five lines is recommended.
+  If there is a need to recognise edges on a raster image or a bitmap or any kind of a matrix, one can find packages
+  that does only 90 degrees vectorization. Typically the nature of artefact images is linear and can be vectorized in much more
+  efficient way than draw a series of 90 degrees lines. The fasteraster package does recognition of lines using only one pass.
+  It also allows to calculate weight and the mass centers for the recognized zones or polygons.
 }
 \details{
-  This section should provide a more detailed overview of how to use the
-  package, including the most important functions.
+  Use raster2vector to vectorize input matrix.
+  Use rasterZoneAnalyzer to break the input matrix by zones and get their weight and mass center.
 }
 \author{
-Your Name, email optional.
+Andy Bosyi <andy@bosyi.com>.
 
-Maintainer: Your Name <your@email.com>
-}
-\references{
-  This optional section can contain literature or other references for
-  background information.
+Maintainer: Andy Bosyi <andy@bosyi.com>
 }
 \keyword{ package }
 \seealso{
-  Optional links to other man pages
+  http://bosyi.com/craft/
 }
 \examples{
   \dontrun{
-     ## Optional simple examples of the most important functions
-     ## These can be in \dontrun{} and \donttest{} blocks.   
+  library(fasteraster);
+  library(datasets);
+
+  polygons <- raster2vector(volcano, 120, 200, 20, 1);
+  image(volcano, col = rev(grey.colors(100)), useRaster = TRUE)
+  plot(0, type = "l", xlim = c(0, nrow(volcano)), ylim = c(0, ncol(volcano)))
+  a <- lapply(polygons, function(x) lines(rbind(x, x[1,])))
+
+  zones <- rasterZoneAnalyzer(volcano, 120, 200, 20);
+  a <- text(zones[ , 3], zones[ , 4], labels = zones[ , 2]);
   }
 }

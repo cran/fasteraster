@@ -1,6 +1,6 @@
 /*
  raster2vector function to convert raster image matrix into list of polygons
- Copyright (C) 2016  Andy Bosyi
+ Copyright (C) 2016-2017  Andy Bosyi
  
  This program is free software; you can redistribute it and/or
  modify it under the terms of the GNU General Public License
@@ -40,7 +40,7 @@ struct polygon_t
 {
   int x;
   int y;
-  double f;
+  double fill;
 };
 
 struct vector_t
@@ -95,61 +95,61 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
         continue;
 
       // get fills for current cell
-      double f = raster[x + y * lenx0];
+      double fill = raster[x + y * lenx0];
             
       // background
-      if (f <= from || f > to)
+      if (fill <= from || fill > to)
         continue;
 
       //get neighbour polygons
-      int pdx = polyxy[COORDS(x + 1, y)];
-      int pdy = polyxy[COORDS(x, y + 1)];
+      int polyidx = polyxy[COORDS(x + 1, y)];
+      int polyidy = polyxy[COORDS(x, y + 1)];
       
       // get fills for this and neighbour cells
-      f = ceilf(f / step) * step;
-      double fdx = pdx == POLY_NA ? FILL_NA : polyheads[pdx].f;
-      double fdy = pdy == POLY_NA ? FILL_NA : polyheads[pdy].f;
+      fill = ceilf(fill / step) * step;
+      double filldx = polyidx == POLY_NA ? FILL_NA : polyheads[polyidx].fill;
+      double filldy = polyidy == POLY_NA ? FILL_NA : polyheads[polyidy].fill;
 
-      if (f != fdx && f != fdy)
+      if (fill != filldx && fill != filldy)
       {
         // new fill, no neighbours like that
         // create new polygon head
-        polygon_t p;
-        p.x = x;
-        p.y = y;
-        p.f = f;
-        polyheads.push_back(p);
+        polygon_t pol;
+        pol.x = x;
+        pol.y = y;
+        pol.fill = fill;
+        polyheads.push_back(pol);
         polyxy[COORDS(x, y)] = polyheads.size() - 1;
         polylen ++;
       }
-      else if (f == fdx && f != fdy)
+      else if (fill == filldx && fill != filldy)
       {
         // right neighbour
         FENCE_UNSET_DX;
-        polyxy[COORDS(x, y)] = pdx;
+        polyxy[COORDS(x, y)] = polyidx;
       }
-      else if (f != fdx && f == fdy)
+      else if (fill != filldx && fill == filldy)
       {
         // upper neighbour
         FENCE_UNSET_DY;
-        polyxy[COORDS(x, y)] = pdy;
+        polyxy[COORDS(x, y)] = polyidy;
       }
       else
       {
         // both neighbours - right and upper
         
-        if (pdx != pdy)
+        if (polyidx != polyidy)
         {
           // welding different polygons with the same fill
-          polyheads[pdy].f = FILL_NA; // mark as removed
+          polyheads[polyidy].fill = FILL_NA; // mark as removed
           polylen--;
           
           for (int i = leny0; i > y; i--)
-            if (polyxy[COORDS(x, i)] == pdy)
-              polyxy[COORDS(x, i)] = pdx;
+            if (polyxy[COORDS(x, i)] == polyidy)
+              polyxy[COORDS(x, i)] = polyidx;
           FENCE_UNSET_DX;
           FENCE_UNSET_DY;
-          polyxy[COORDS(x, y)] = pdx;
+          polyxy[COORDS(x, y)] = polyidx;
         }
         else
         {
@@ -161,14 +161,14 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
             
             // keep the horizontal fence and weld to right
             FENCE_UNSET_DX;
-            polyxy[COORDS(x, y)] = pdx;
+            polyxy[COORDS(x, y)] = polyidx;
           }
           else
           {
             // weld to both
             FENCE_UNSET_DX;
             FENCE_UNSET_DY;
-            polyxy[COORDS(x, y)] = pdx;
+            polyxy[COORDS(x, y)] = polyidx;
           }
         }
         
@@ -184,12 +184,12 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
   int polyidx = 0;
   for (int p = polyheads.size() - 1; p >= 0; p--)
   {
-    if (polyheads[p].f == FILL_NA)
+    polygon_t ph = polyheads[p];
+    if (ph.fill == FILL_NA)
       continue; // omit joined pieces
    
     pol.clear();
-      
-    polygon_t ph = polyheads[p];
+
     int x = ph.x;
     int y = ph.y;
     vector_t v, nv;
@@ -401,4 +401,142 @@ List raster2vector(NumericMatrix raster, double from = 0, double to = 1, double 
   delete[] polyxy; 
   
   return polygons;
+} //-------------------------------------------------------------------------------
+
+
+struct polygonEx_t
+{
+  int headX;
+  int headY;
+  double fill;
+  double centerX;
+  double centerY;
+  double weight;
+};
+
+#define WELD_CELL(p) { polyxy[COORDS(x, y)] = p; \
+  polyheads[p].weight ++; \
+  polyheads[p].centerX += (((double) x) - polyheads[p].centerX) / polyheads[p].weight; \
+  polyheads[p].centerY += (((double) y) - polyheads[p].centerY) / polyheads[p].weight; }
+  
+//' Recognizes zones in the raster matrix and return a list of their analysis.
+//' 
+//' Takes a raster matrix and recognize zones exactly as the raster2vector function does. However does not return
+//' polygon vectors, but weight and center of mass for each polygone (or so called zone).
+//'
+//' @param raster input matrix of numeric values.
+//' @param from lower (greater than) margin for recognizable zone values.
+//' @param to upper (less than or equal) margin.
+//' @param step values gradient.
+//' @return matrix of zones by four values: fill (ceiling values), weight (in cells), x and y of the mass center.
+//' @examples library(datasets)
+//' rasterZoneAnalyzer(volcano, 120, 200, 20)
+//' @export
+// [[Rcpp::export]]
+NumericMatrix rasterZoneAnalyzer(NumericMatrix raster, double from = 0, double to = 1, double step = 0.1)
+{
+  int lenx0 = raster.nrow();
+  int leny0 = raster.ncol();
+  
+  std::vector<polygonEx_t> polyheads;
+  int lenx = lenx0 + 1;
+  int leny = leny0 + 1;
+  int* polyxy = new int[lenx * leny];
+  int polylen = 0;
+  
+  for (int x = lenx0; x >= 0; x--)
+    for (int y = leny0; y >= 0; y--)
+    {
+      // in all cases set unknown polygonID
+      polyxy[COORDS(x, y)] = POLY_NA;
+      
+      // margin fences
+      if (x == lenx0 || y == leny0)
+        continue;
+      
+      // get fills for current cell
+      double fill = raster[x + y * lenx0];
+      
+      // background
+      if (fill <= from || fill > to)
+        continue;
+      
+      //get neighbour polygons
+      int polyidx = polyxy[COORDS(x + 1, y)];
+      int polyidy = polyxy[COORDS(x, y + 1)];
+      
+      // get fills for this and neighbour cells
+      fill = ceilf(fill / step) * step;
+      double filldx = polyidx == POLY_NA ? FILL_NA : polyheads[polyidx].fill;
+      double filldy = polyidy == POLY_NA ? FILL_NA : polyheads[polyidy].fill;
+      
+      if (fill != filldx && fill != filldy)
+      {
+        // new fill, no neighbours like that
+        // create a new polygon head
+        polygonEx_t pol;
+        pol.headX = x;
+        pol.headY = y;
+        pol.fill = fill;
+        pol.centerX = (double) x;
+        pol.centerY = (double) y;
+        pol.weight = (double) 1;
+        polyheads.push_back(pol);
+        
+        polyxy[COORDS(x, y)] = polyheads.size() - 1;
+        polylen ++;
+      }
+      else if (fill == filldx && fill != filldy)
+      {
+        // right neighbour
+        WELD_CELL(polyidx);
+      }
+      else if (fill != filldx && fill == filldy)
+      {
+        // upper neighbour
+        WELD_CELL(polyidy);
+      }
+      else
+      {
+        // both neighbours - right and upper
+        WELD_CELL(polyidx); //weld to right
+        
+        if (polyidx != polyidy)
+        {
+          // welding different polygons with the same fill
+          polyheads[polyidx].weight += polyheads[polyidy].weight;
+          polyheads[polyidx].centerX += (polyheads[polyidy].centerX - polyheads[polyidx].centerX) * polyheads[polyidy].weight / polyheads[polyidx].weight;
+          polyheads[polyidx].centerY += (polyheads[polyidy].centerY - polyheads[polyidx].centerY) * polyheads[polyidy].weight / polyheads[polyidx].weight;
+
+          polyheads[polyidy].fill = FILL_NA; // mark as removed
+          polylen--;
+          
+          for (int i = leny0; i > y; i--) // mark on the matrix
+            if (polyxy[COORDS(x, i)] == polyidy)
+              polyxy[COORDS(x, i)] = polyidx;
+        }
+      }
+    }
+    
+    
+  NumericMatrix zones(polylen, 4);
+
+  int zoneidx = 0;
+  for (int p = polyheads.size() - 1; p >= 0; p--)
+  {
+    polygonEx_t ph = polyheads[p];
+    
+    if (ph.fill == FILL_NA)
+      continue; // omit joined pieces
+
+    // fill result data
+    zones(zoneidx, 0) = ph.fill;
+    zones(zoneidx, 1) = ph.weight;
+    zones(zoneidx, 2) = ph.centerX + 1; // convert from 0 to 1 based array
+    zones(zoneidx, 3) = ph.centerY + 1;
+    zoneidx ++;
+  }
+
+  delete[] polyxy; 
+  return zones;
 }
